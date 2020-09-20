@@ -1,23 +1,25 @@
 /*
- * ESP32 firmware to measure the flow rate of the water system and send it to an MQTT 
+ * ESP8266 firmware to measure the flow rate of the water system and send it to an MQTT 
  * broker.
  * Configuration is done via serial connection.  Enter:
  *  broker=<broker name or address>
  *  port=<port number>   (defaults to 1883)
- *  topic=<topic root> (something like buteomont/water/pressure/ - must end with / and 
- *  "raw", "lpm", or "gpm" will be added)
+ *  topicRoot=<topic root> (something like buteomont/water/pressure/ - must end with / and 
+ *  "raw", "liters", or "period" will be added)
  *  user=<mqtt user>
  *  pass=<mqtt password>
  *  ssid=<wifi ssid>
  *  wifipass=<wifi password>
- *  pulsesPerLiter=<decimal number> (this is the number of pulses per liter; use 6.6 for the Gredia flowmeter) 
+ *  pulsesPerLiter=<decimal number> (this is the number of pulses per liter; use 363 for the Gredia flowmeter) 
  *  reboot=yes to reboot
+ *  resetPulses=yes to reset the pulse counter to zero
  *  factorydefaults=yes to reset all settings to factory defaults
  *  
  */
  
 #include <PubSubClient.h> 
-#include <WiFi.h>
+//#include <WiFi.h>
+#include <ESP8266WiFi.h>
 #include <EEPROM.h>
 #include "mqtt_flow_counter.h"
 
@@ -27,21 +29,24 @@
 // 3) Change broker value to a server with a known SSL/TLS root certificate 
 //    flashed in the WiFi module.
 
+//PubSubClient callback function header.  This must appear before the PubSubClient constructor.
+void incomingMqttHandler(char* reqTopic, byte* payload, unsigned int length);
+
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
-int tempcounter=0;
 
 //mqtt stuff
 unsigned long lastMessageSent = 0;
 int messageCount = 0;
+unsigned long lastReport=0;
+boolean finalReportSent=true;
 
 //flow stuff
 boolean lastTick=false;
 unsigned long pulseCount=0;
-unsigned long liters=0;
+float liters=0.0;
 unsigned long lastPulseTime=0;
 unsigned long pulsePeriod=0; //The number of milliseconds between last two pulses
-//int flowRate=0; //The most recent calculated flow rate
 
 typedef struct 
   {
@@ -52,12 +57,14 @@ typedef struct
   int mqttBrokerPort=1883;
   char mqttUsername[USERNAME_SIZE]="";
   char mqttPassword[PASSWORD_SIZE]="";
-  char mqttTopic[MQTT_TOPIC_SIZE]="";
-  double pulsesPerLiter=6.6;
+  char mqttTopicRoot[MQTT_TOPIC_SIZE]="";
+  float pulsesPerLiter=DEFAULT_PULSES_PER_LITER;
   } conf;
 
 conf settings; //all settings in one struct makes it easier to store in EEPROM
 boolean settingsAreValid=false;
+
+int pulseCountStorage=sizeof(settings); //use the EEPROM location after settings to store the pulse counter occasionally
 
 String commandString = "";     // a String to hold incoming commands from serial
 bool commandComplete = false;  // goes true when enter is pressed
@@ -75,18 +82,26 @@ void setup()
     ; // wait for serial port to connect. Needed for native USB port only
     }
     
-  EEPROM.begin(sizeof(settings)); //fire up the eeprom section of flash
+  EEPROM.begin(sizeof(settings)+sizeof(pulseCount)); //fire up the eeprom section of flash
   Serial.print("Settings object size=");
   Serial.println(sizeof(settings));
 
   pinMode(SENSOR_PIN,INPUT_PULLUP);
-  
-  //WiFi.mode(WIFI_OFF);
-  btStop(); //not using bluetooth
-  
-  commandString.reserve(200); // reserve 200 bytes for the command string
+  pinMode(LED_BUILTIN, OUTPUT);
+    
+  commandString.reserve(200); // reserve 200 bytes of serial buffer space for incoming command string
 
   loadSettings(); //set the values from eeprom
+  if (settings.mqttBrokerPort < 0) //then this must be the first powerup
+    {
+    Serial.println("\n*********************** Resetting EEPROM Values ************************");
+    initializeSettings();
+    saveSettings();
+    storePulseCount(); //store the zeroed pulse counter too
+    delay(2000);
+    ESP.restart();
+    }
+  readPulseCount(); //restore the pulse count value from before power loss
 
   if (settingsAreValid)
     {
@@ -94,9 +109,14 @@ void setup()
     Serial.print("Attempting to connect to WPA SSID \"");
     Serial.print(settings.ssid);
     Serial.println("\"");
-    while (WiFi.begin(settings.ssid, settings.wifiPassword) != WL_CONNECTED) 
+    
+    WiFi.begin(settings.ssid, settings.wifiPassword);
+//    while (WiFi.begin(settings.ssid, settings.wifiPassword) != WL_CONNECTED) 
+    while (WiFi.status() != WL_CONNECTED) 
       {
       // failed, retry
+//      WiFi.printDiag(Serial);
+//      Serial.println(WiFi.status());
       Serial.print(".");
       
       // Check for input in case it needs to be changed to work
@@ -110,21 +130,98 @@ void setup()
           }
         }
       else
-        delay(5000);
+        {
+        delay(2000);
+        }
       }
   
-    Serial.println("You're connected to the network");
+    Serial.println("Connected to network.");
     Serial.println();
 
     // ********************* Initialize the MQTT connection
     mqttClient.setServer(settings.mqttBrokerAddress, settings.mqttBrokerPort);
+    mqttClient.setCallback(incomingMqttHandler);
+    
     delay(2000);  //give wifi a chance to warm up
     reconnect();     
     }
     
   Serial.println("\nConfiguration is done via serial connection.  You can enter:\n");
-  showSettings();
+  showSettings(); 
+  lastTick=getTick();  //to keep from reporting after reboot for no reason 
+  digitalWrite(LED_BUILTIN, HIGH); //turn off the LED
   }
+
+
+/**
+ * Handler for incoming MQTT messages.  The payload is the command to perform. 
+ * The only one implemented at this point is "settings", which sends a JSON payload 
+ * of all user-specified settings to the <mqttTopicRoot>/settings topic.
+ */
+void incomingMqttHandler(char* reqTopic, byte* payload, unsigned int length) 
+  {
+  payload[length]='\0';
+  char charbuf[100];
+  sprintf(charbuf,"%s",payload);
+  
+//  Serial.print("\n***** Incoming command, topic is ");
+//  Serial.print(reqTopic);
+//  Serial.print(", payload is ");
+//  Serial.println(charbuf);
+  
+  char* response;
+  
+  //if the command is MQTT_PAYLOAD_SETTINGS_COMMAND, send all of the settings
+  if (strcmp(charbuf,MQTT_PAYLOAD_SETTINGS_COMMAND)==0)
+    {
+    char tempbuf[15]; //for converting numbers to strings
+    char jsonStatus[JSON_STATUS_SIZE];
+    
+    strcpy(jsonStatus,"{");
+    strcat(jsonStatus,"\"broker\":\"");
+    strcat(jsonStatus,settings.mqttBrokerAddress);
+    strcat(jsonStatus,"\", \"port\":");
+    sprintf(tempbuf,"%d",settings.mqttBrokerPort);
+    strcat(jsonStatus,tempbuf);
+    strcat(jsonStatus,", \"topicRoot\":\"");
+    strcat(jsonStatus,settings.mqttTopicRoot);
+    strcat(jsonStatus,"\", \"user\":\"");
+    strcat(jsonStatus,settings.mqttUsername);
+    strcat(jsonStatus,"\", \"pass\":\"");
+    strcat(jsonStatus,settings.mqttPassword);
+    strcat(jsonStatus,"\", \"ssid\":\"");
+    strcat(jsonStatus,settings.ssid);
+    strcat(jsonStatus,"\", \"wifipass\":\"");
+    strcat(jsonStatus,settings.wifiPassword);
+    strcat(jsonStatus,"\", \"pulsesPerLiter\":");
+    sprintf(tempbuf,"%.4f",settings.pulsesPerLiter);
+    strcat(jsonStatus,tempbuf);
+    strcat(jsonStatus,"}");
+    response=jsonStatus;
+    }
+  else
+    {
+    char badCmd[18];
+    strcpy(badCmd,"(empty)");
+    response=badCmd;
+    }
+    
+  char topic[MQTT_TOPIC_SIZE];
+  strcpy(topic,settings.mqttTopicRoot);
+  strcat(topic,charbuf); //the incoming command becomes the topic suffix
+
+//  Serial.print("***** Outgoing topic is ");
+//  Serial.print(topic);
+//  Serial.print(", response is ");
+//  Serial.println(response);
+//  Serial.println("");
+  
+  if (!publish(topic,response))
+    Serial.println("************ Failure when publishing status response!");
+  
+
+  }
+
 
 void showSettings()
   {
@@ -134,9 +231,9 @@ void showSettings()
   Serial.print("port=<port number>   (");
   Serial.print(settings.mqttBrokerPort);
   Serial.println(")");
-  Serial.print("topic=<topic root> (");
-  Serial.print(settings.mqttTopic);
-  Serial.println(")");  
+  Serial.print("topicRoot=<topic root> (");
+  Serial.print(settings.mqttTopicRoot);
+  Serial.println(")  Note: must end with \"/\"");  
   Serial.print("user=<mqtt user> (");
   Serial.print(settings.mqttUsername);
   Serial.println(")");
@@ -150,9 +247,10 @@ void showSettings()
   Serial.print(settings.wifiPassword);
   Serial.println(")");
   Serial.print("pulsesPerLiter=<number of pulses generated per liter of flow>   (");
-  Serial.print(settings.pulsesPerLiter);
+  Serial.print(settings.pulsesPerLiter,4);
   Serial.println(")");
   Serial.println("\"reboot=yes\" to reboot the controller");
+  Serial.println("\"resetPulses=yes\" to reset the pulse counter to zero");
   Serial.println("\n*** Use \"factorydefaults=yes\" to reset all settings ***\n");
   }
 
@@ -173,6 +271,12 @@ void reconnect()
     if (mqttClient.connect(clientId.c_str(),settings.mqttUsername,settings.mqttPassword))
       {
       Serial.println("connected to MQTT broker.");
+
+      //resubscribe to the incoming message topic
+      char topic[MQTT_TOPIC_SIZE];
+      strcpy(topic,settings.mqttTopicRoot);
+      strcat(topic,MQTT_TOPIC_COMMAND_REQUEST);
+      mqttClient.subscribe(topic);
       }
     else 
       {
@@ -197,15 +301,28 @@ boolean getTick()
 
 void handleTick(boolean tick)
   {
+  long ts=millis();
   if (tick!=lastTick)
     {
     lastTick=tick; // only process one event per tick
     if (tick==true) //only process the leading edge of flow pulse
       {
-      long ts=millis();
       tickEvent(ts);
       lastPulseTime=ts;  //save it for next time
+      finalReportSent=false;
       }
+    digitalWrite(LED_BUILTIN, tick?LOW:HIGH); //HIGH is LED OFF
+    }
+
+  //If there is no flow for thrice the reporting frequency, send one final report
+  //to catch the last few pulses
+  if (!finalReportSent && (ts-lastReport)>REPORT_FREQ*3)
+    {
+    report();
+    lastReport=ts;
+    finalReportSent=true;
+    storePulseCount(); //save the pulse count value in case we lose power
+    digitalWrite(LED_BUILTIN, HIGH); //turn off the LED when water stops
     }
   }
 
@@ -230,7 +347,14 @@ void tickEvent(long cts)
 
   pulseCount++;
   liters=pulseCount/settings.pulsesPerLiter;
-  report();
+  
+  if (cts-lastReport>REPORT_FREQ)
+    {
+    report();
+    lastReport=cts;
+    finalReportSent=false;
+    storePulseCount(); //save the pulse count value in case we lose power
+    }
   }
 
 /*
@@ -283,9 +407,9 @@ void processCommand(String cmd)
     if (settingsAreValid)
       ESP.restart();
     }
-  else if (strcmp(nme,"topic")==0)
+  else if (strcmp(nme,"topicRoot")==0)
     {
-    strcpy(settings.mqttTopic,val);
+    strcpy(settings.mqttTopicRoot,val);
     saveSettings();
     if (settingsAreValid)
       ESP.restart();
@@ -331,11 +455,18 @@ void processCommand(String cmd)
     delay(2000);
     ESP.restart();
     }
+  else if ((strcmp(nme,"resetPulses")==0) && (strcmp(val,"yes")==0)) //reset the pulse counter
+    {
+    Serial.println("\n*********** Resetting pulse counter ************");
+    pulseCount=0;
+    storePulseCount();
+    }
   else if ((strcmp(nme,"factorydefaults")==0) && (strcmp(val,"yes")==0)) //reset all eeprom settings
     {
     Serial.println("\n*********************** Resetting EEPROM Values ************************");
     initializeSettings();
     saveSettings();
+    storePulseCount(); //store the zeroed pulse counter too
     delay(2000);
     ESP.restart();
     }
@@ -353,29 +484,35 @@ void initializeSettings()
   settings.mqttBrokerPort=1883;
   strcpy(settings.mqttUsername,"");
   strcpy(settings.mqttPassword,"");
-  strcpy(settings.mqttTopic,"");
-  settings.pulsesPerLiter=6.6;
+  strcpy(settings.mqttTopicRoot,"");
+  settings.pulsesPerLiter=DEFAULT_PULSES_PER_LITER;
+  pulseCount=0;
   }
 
 void loop() 
   {
   // serialEvent is not interrupt driven on the ESP32 for some reason. Do it here.
   if (Serial.available())
-    serialEvent();
-    
-  // call loop() regularly to allow the library to send MQTT keep alives which
-  // avoids being disconnected by the broker
-  mqttClient.loop();
-
-  String cmd=getConfigCommand();
-  if (cmd.length()>0)
     {
-    processCommand(cmd);
+    serialEvent();
+    String cmd=getConfigCommand();
+    if (cmd.length()>0)
+      {
+      processCommand(cmd);
+      }
     }
+        
+  // call loop() regularly to allow the library to send MQTT keep alives which
+  // avoids being disconnected by the broker.  Don't call if not set up yet
+  // because the WDT on the ESP8266 will reset the processor. Not a problem on ESP32.
+  if (settingsAreValid)
+    {
+    mqttClient.loop();
 
-  //See if a new pulse has arrived. If so, handle it.
-  boolean t=getTick();
-  handleTick(t);
+    //See if a new pulse has arrived. If so, handle it.
+    boolean t=getTick();
+    handleTick(t);
+    }
   }
 
 
@@ -390,7 +527,7 @@ void report()
   boolean success=false;
 
   //publish the raw pulse count
-  strcpy(topic,settings.mqttTopic);
+  strcpy(topic,settings.mqttTopicRoot);
   strcat(topic,MQTT_TOPIC_RAW);
   sprintf(reading,"%u",pulseCount);
   success=publish(topic,reading);
@@ -398,15 +535,15 @@ void report()
     Serial.println("************ Failed publishing raw rate!");
 
   //publish the liter count
-  strcpy(topic,settings.mqttTopic);
+  strcpy(topic,settings.mqttTopicRoot);
   strcat(topic,MQTT_TOPIC_LITERS);
-  sprintf(reading,"%u",liters);
+  sprintf(reading,"%.1f",liters);
   success=publish(topic,reading);
   if (!success)
     Serial.println("************ Failed publishing raw rate!");
 
   //publish the raw milliseconds between ticks
-  strcpy(topic,settings.mqttTopic);
+  strcpy(topic,settings.mqttTopicRoot);
   strcat(topic,MQTT_TOPIC_PERIOD);
   sprintf(reading,"%u",pulsePeriod);
   success=publish(topic,reading);
@@ -455,7 +592,7 @@ boolean saveSettings()
     settings.mqttBrokerPort!=0 &&
 //    strlen(settings.mqttUsername)>0 &&
 //    strlen(settings.mqttPassword)>0 &&
-    strlen(settings.mqttTopic)>0 &&
+    strlen(settings.mqttTopicRoot)>0 &&
     settings.pulsesPerLiter!=0)
     {
     Serial.println("Settings deemed valid");
@@ -471,6 +608,33 @@ boolean saveSettings()
     
   EEPROM.put(0,settings);
   return EEPROM.commit();
+  }
+
+  
+/*
+ * Save the pulse counter to eeprom
+ * 
+ */
+ boolean storePulseCount()
+  {
+//  Serial.print("Writing pulse counter (");
+//  Serial.print(pulseCount);
+//  Serial.print(" to nonvolatile storage at location ");
+//  Serial.println(pulseCountStorage);
+  EEPROM.put(pulseCountStorage,pulseCount);
+  return EEPROM.commit();
+  }
+  
+/*
+ * Read the pulse counter from eeprom
+ * 
+ */
+ boolean readPulseCount()
+  {
+  Serial.print("Restoring pulse counter (");
+  EEPROM.get(pulseCountStorage,pulseCount);
+  Serial.print(pulseCount);
+  Serial.println(")");
   }
 
 /*

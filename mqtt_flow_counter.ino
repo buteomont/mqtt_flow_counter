@@ -160,7 +160,7 @@ void setup()
  */
 void incomingMqttHandler(char* reqTopic, byte* payload, unsigned int length) 
   {
-  payload[length]='\0';
+  payload[length]='\0'; //this should have been done in the caller code, shouldn't have to do it here
   char charbuf[100];
   sprintf(charbuf,"%s",payload);
   
@@ -198,6 +198,14 @@ void incomingMqttHandler(char* reqTopic, byte* payload, unsigned int length)
     strcat(jsonStatus,tempbuf);
     strcat(jsonStatus,"}");
     response=jsonStatus;
+    }
+  else if (strcmp(charbuf,MQTT_PAYLOAD_RESET_PULSE_COMMAND)==0)
+    {
+    pulseCount=0;
+    storePulseCount(); //store the zeroed pulse counter
+    char tmp[10];
+    strcpy(tmp,"OK");
+    response=tmp;
     }
   else
     {

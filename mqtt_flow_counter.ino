@@ -154,13 +154,17 @@ void setup()
 
 
 /**
- * Handler for incoming MQTT messages.  The payload is the command to perform. 
- * The only one implemented at this point is "settings", which sends a JSON payload 
- * of all user-specified settings to the <mqttTopicRoot>/settings topic.
+ * Handler for incoming MQTT messages.  The payload is the command to perform. The MQTT message topic sent is the  
+ * topic root plus the command.
+ * Implemented commands are: 
+ * MQTT_PAYLOAD_SETTINGS_COMMAND: sends a JSON payload of all user-specified settings
+ * MQTT_PAYLOAD_RESET_PULSE_COMMAND: Reset the pulse counter to zero
+ * MQTT_PAYLOAD_REBOOT: Reboot the controller
  */
 void incomingMqttHandler(char* reqTopic, byte* payload, unsigned int length) 
   {
   payload[length]='\0'; //this should have been done in the caller code, shouldn't have to do it here
+  boolean rebootScheduled=false; //so we can reboot after sending the reboot response
   char charbuf[100];
   sprintf(charbuf,"%s",payload);
   
@@ -207,6 +211,13 @@ void incomingMqttHandler(char* reqTopic, byte* payload, unsigned int length)
     strcpy(tmp,"OK");
     response=tmp;
     }
+  else if (strcmp(charbuf,MQTT_PAYLOAD_REBOOT)==0) //reboot the controller
+    {
+    char tmp[10];
+    strcpy(tmp,"REBOOTING");
+    response=tmp;
+    rebootScheduled=true;
+    }
   else
     {
     char badCmd[18];
@@ -217,17 +228,15 @@ void incomingMqttHandler(char* reqTopic, byte* payload, unsigned int length)
   char topic[MQTT_TOPIC_SIZE];
   strcpy(topic,settings.mqttTopicRoot);
   strcat(topic,charbuf); //the incoming command becomes the topic suffix
-
-//  Serial.print("***** Outgoing topic is ");
-//  Serial.print(topic);
-//  Serial.print(", response is ");
-//  Serial.println(response);
-//  Serial.println("");
-  
+ 
   if (!publish(topic,response))
     Serial.println("************ Failure when publishing status response!");
   
-
+  if (rebootScheduled)
+    {
+    delay(2000); //give publish time to complete
+    ESP.restart();
+    }
   }
 
 
@@ -515,6 +524,7 @@ void loop()
   // because the WDT on the ESP8266 will reset the processor. Not a problem on ESP32.
   if (settingsAreValid)
     {
+    reconnect();  //won't do anything unless there's a problem
     mqttClient.loop();
 
     //See if a new pulse has arrived. If so, handle it.

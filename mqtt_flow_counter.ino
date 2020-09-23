@@ -16,9 +16,9 @@
  *  factorydefaults=yes to reset all settings to factory defaults
  *  
  */
+#define VERSION "20.09.23.1"  //remember to update this after every change!
  
 #include <PubSubClient.h> 
-//#include <WiFi.h>
 #include <ESP8266WiFi.h>
 #include <EEPROM.h>
 #include "mqtt_flow_counter.h"
@@ -71,12 +71,22 @@ bool commandComplete = false;  // goes true when enter is pressed
 
 void setup() 
   {
-  //***************Initialize serial and wait for port to open 
+  //Set up hardware
+  pinMode(SENSOR_PIN,INPUT_PULLUP);
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW); //turn on the LED to show we are booting
+  
+  //Initialize serial and wait for port to open 
   Serial.begin(115200);
   Serial.setTimeout(10000);
   Serial.println();
   delay(500);
-  Serial.println("Starting up...");
+  Serial.println("\n***************************************************");
+  Serial.print("MQTT flow counter version ");
+  Serial.print(VERSION);
+  Serial.println(" starting up...");
+  Serial.println("***************************************************\n");
+  
   while (!Serial) 
     {
     ; // wait for serial port to connect. Needed for native USB port only
@@ -86,15 +96,13 @@ void setup()
   Serial.print("Settings object size=");
   Serial.println(sizeof(settings));
 
-  pinMode(SENSOR_PIN,INPUT_PULLUP);
-  pinMode(LED_BUILTIN, OUTPUT);
     
   commandString.reserve(200); // reserve 200 bytes of serial buffer space for incoming command string
 
   loadSettings(); //set the values from eeprom
   if (settings.mqttBrokerPort < 0) //then this must be the first powerup
     {
-    Serial.println("\n*********************** Resetting EEPROM Values ************************");
+    Serial.println("\n*********************** Resetting All EEPROM Values ************************");
     initializeSettings();
     saveSettings();
     storePulseCount(); //store the zeroed pulse counter too
@@ -159,7 +167,9 @@ void setup()
  * Implemented commands are: 
  * MQTT_PAYLOAD_SETTINGS_COMMAND: sends a JSON payload of all user-specified settings
  * MQTT_PAYLOAD_RESET_PULSE_COMMAND: Reset the pulse counter to zero
- * MQTT_PAYLOAD_REBOOT: Reboot the controller
+ * MQTT_PAYLOAD_REBOOT_COMMAND: Reboot the controller
+ * MQTT_PAYLOAD_VERSION_COMMAND Show the version number
+ * MQTT_PAYLOAD_STATUS_COMMAND Show the most recent flow values
  */
 void incomingMqttHandler(char* reqTopic, byte* payload, unsigned int length) 
   {
@@ -167,13 +177,8 @@ void incomingMqttHandler(char* reqTopic, byte* payload, unsigned int length)
   boolean rebootScheduled=false; //so we can reboot after sending the reboot response
   char charbuf[100];
   sprintf(charbuf,"%s",payload);
-  
-//  Serial.print("\n***** Incoming command, topic is ");
-//  Serial.print(reqTopic);
-//  Serial.print(", payload is ");
-//  Serial.println(charbuf);
-  
   char* response;
+  
   
   //if the command is MQTT_PAYLOAD_SETTINGS_COMMAND, send all of the settings
   if (strcmp(charbuf,MQTT_PAYLOAD_SETTINGS_COMMAND)==0)
@@ -211,7 +216,23 @@ void incomingMqttHandler(char* reqTopic, byte* payload, unsigned int length)
     strcpy(tmp,"OK");
     response=tmp;
     }
-  else if (strcmp(charbuf,MQTT_PAYLOAD_REBOOT)==0) //reboot the controller
+  else if (strcmp(charbuf,MQTT_PAYLOAD_VERSION_COMMAND)==0) //show the version number
+    {
+    char tmp[15];
+    strcpy(tmp,VERSION);
+    response=tmp;
+    }
+  else if (strcmp(charbuf,MQTT_PAYLOAD_STATUS_COMMAND)==0) //show the latest flow values
+    {
+    if (liters==0.0) //happens when status is requested immediately after reboot
+      liters=pulseCount/settings.pulsesPerLiter;
+    report();
+    
+    char tmp[25];
+    strcpy(tmp,"Status report complete");
+    response=tmp;
+    }
+  else if (strcmp(charbuf,MQTT_PAYLOAD_REBOOT_COMMAND)==0) //reboot the controller
     {
     char tmp[10];
     strcpy(tmp,"REBOOTING");
@@ -228,7 +249,7 @@ void incomingMqttHandler(char* reqTopic, byte* payload, unsigned int length)
   char topic[MQTT_TOPIC_SIZE];
   strcpy(topic,settings.mqttTopicRoot);
   strcat(topic,charbuf); //the incoming command becomes the topic suffix
- 
+
   if (!publish(topic,response))
     Serial.println("************ Failure when publishing status response!");
   

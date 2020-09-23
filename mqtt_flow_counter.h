@@ -10,7 +10,9 @@
 #define MQTT_TOPIC_COMMAND_REQUEST "command"
 #define MQTT_PAYLOAD_SETTINGS_COMMAND "settings" //show all user accessable settings
 #define MQTT_PAYLOAD_RESET_PULSE_COMMAND "resetPulseCounter" //reset the pulse counter to zero
-#define MQTT_PAYLOAD_REBOOT "reboot" //reboot the controller
+#define MQTT_PAYLOAD_REBOOT_COMMAND "reboot" //reboot the controller
+#define MQTT_PAYLOAD_VERSION_COMMAND "version" //show the version number
+#define MQTT_PAYLOAD_STATUS_COMMAND "status" //show the most recent flow values
 #define JSON_STATUS_SIZE SSID_SIZE+PASSWORD_SIZE+USERNAME_SIZE+MQTT_TOPIC_SIZE+50 //+50 for associated field names, etc
 #define SENSOR_PIN 4     // the input pin for the sensor
 //#define LED_BUILTIN 2     //the blue LED

@@ -16,7 +16,7 @@
  *  factorydefaults=yes to reset all settings to factory defaults
  *  
  */
-#define VERSION "20.09.23.1"  //remember to update this after every change!
+#define VERSION "20.10.05.1"  //remember to update this after every change! YY.MM.DD.REV
  
 #include <PubSubClient.h> 
 #include <ESP8266WiFi.h>
@@ -100,6 +100,10 @@ void setup()
   commandString.reserve(200); // reserve 200 bytes of serial buffer space for incoming command string
 
   loadSettings(); //set the values from eeprom
+
+  Serial.println("\nConfiguration is done via serial connection.  You can enter:\n");
+  showSettings(); //show them
+  
   if (settings.mqttBrokerPort < 0) //then this must be the first powerup
     {
     Serial.println("\n*********************** Resetting All EEPROM Values ************************");
@@ -127,20 +131,20 @@ void setup()
 //      Serial.println(WiFi.status());
       Serial.print(".");
       
-      // Check for input in case it needs to be changed to work
-      if (Serial.available())
-        {
-        serialEvent();
-        String cmd=getConfigCommand();
-        if (cmd.length()>0)
-          {
-          processCommand(cmd);
-          }
-        }
-      else
-        {
+      checkForCommand(); // Check for input in case it needs to be changed to work
+//      if (Serial.available())
+//        {
+//        serialEvent();
+//        String cmd=getConfigCommand();
+//        if (cmd.length()>0)
+//          {
+//          processCommand(cmd);
+//          }
+//        }
+//      else
+//        {
         delay(2000);
-        }
+//        }
       }
   
     Serial.println("Connected to network.");
@@ -149,13 +153,12 @@ void setup()
     // ********************* Initialize the MQTT connection
     mqttClient.setServer(settings.mqttBrokerAddress, settings.mqttBrokerPort);
     mqttClient.setCallback(incomingMqttHandler);
-    
+    mqttClient.setBufferSize(JSON_STATUS_SIZE); //that's the biggest one
+       
     delay(2000);  //give wifi a chance to warm up
     reconnect();     
     }
     
-  Serial.println("\nConfiguration is done via serial connection.  You can enter:\n");
-  showSettings(); 
   lastTick=getTick();  //to keep from reporting after reboot for no reason 
   digitalWrite(LED_BUILTIN, HIGH); //turn off the LED
   }
@@ -177,73 +180,37 @@ void incomingMqttHandler(char* reqTopic, byte* payload, unsigned int length)
   boolean rebootScheduled=false; //so we can reboot after sending the reboot response
   char charbuf[100];
   sprintf(charbuf,"%s",payload);
-  char* response;
+  char response[JSON_STATUS_SIZE];
   
-  
-  //if the command is MQTT_PAYLOAD_SETTINGS_COMMAND, send all of the settings
-  if (strcmp(charbuf,MQTT_PAYLOAD_SETTINGS_COMMAND)==0)
+  if (strcmp((char*)payload,MQTT_TOPIC_COMMAND_REQUEST)==0)
     {
-    char tempbuf[15]; //for converting numbers to strings
-    char jsonStatus[JSON_STATUS_SIZE];
-    
-    strcpy(jsonStatus,"{");
-    strcat(jsonStatus,"\"broker\":\"");
-    strcat(jsonStatus,settings.mqttBrokerAddress);
-    strcat(jsonStatus,"\", \"port\":");
-    sprintf(tempbuf,"%d",settings.mqttBrokerPort);
-    strcat(jsonStatus,tempbuf);
-    strcat(jsonStatus,", \"topicRoot\":\"");
-    strcat(jsonStatus,settings.mqttTopicRoot);
-    strcat(jsonStatus,"\", \"user\":\"");
-    strcat(jsonStatus,settings.mqttUsername);
-    strcat(jsonStatus,"\", \"pass\":\"");
-    strcat(jsonStatus,settings.mqttPassword);
-    strcat(jsonStatus,"\", \"ssid\":\"");
-    strcat(jsonStatus,settings.ssid);
-    strcat(jsonStatus,"\", \"wifipass\":\"");
-    strcat(jsonStatus,settings.wifiPassword);
-    strcat(jsonStatus,"\", \"pulsesPerLiter\":");
-    sprintf(tempbuf,"%.4f",settings.pulsesPerLiter);
-    strcat(jsonStatus,tempbuf);
-    strcat(jsonStatus,"}");
-    response=jsonStatus;
+    return; //someone's messing with us, ignore them
+    }  
+  else if (strcmp(charbuf,MQTT_PAYLOAD_SETTINGS_COMMAND)==0)
+    {
+    strcpy(response,getMqttSettings());// send all of the settings
+    Serial.println(response);
     }
   else if (strcmp(charbuf,MQTT_PAYLOAD_RESET_PULSE_COMMAND)==0)
     {
-    pulseCount=0;
-    storePulseCount(); //store the zeroed pulse counter
-    char tmp[10];
-    strcpy(tmp,"OK");
-    response=tmp;
+    strcpy(response,mqttResetPulseCounter());
     }
   else if (strcmp(charbuf,MQTT_PAYLOAD_VERSION_COMMAND)==0) //show the version number
     {
-    char tmp[15];
-    strcpy(tmp,VERSION);
-    response=tmp;
+    strcpy(response,getVersion());
     }
   else if (strcmp(charbuf,MQTT_PAYLOAD_STATUS_COMMAND)==0) //show the latest flow values
     {
-    if (liters==0.0) //happens when status is requested immediately after reboot
-      liters=pulseCount/settings.pulsesPerLiter;
-    report();
-    
-    char tmp[25];
-    strcpy(tmp,"Status report complete");
-    response=tmp;
+    strcpy(response,getMqttStatus());
     }
   else if (strcmp(charbuf,MQTT_PAYLOAD_REBOOT_COMMAND)==0) //reboot the controller
     {
-    char tmp[10];
-    strcpy(tmp,"REBOOTING");
-    response=tmp;
+    strcpy(response,"REBOOTING");
     rebootScheduled=true;
     }
   else
     {
-    char badCmd[18];
-    strcpy(badCmd,"(empty)");
-    response=badCmd;
+    strcpy(response,"(empty)");
     }
     
   char topic[MQTT_TOPIC_SIZE];
@@ -259,7 +226,6 @@ void incomingMqttHandler(char* reqTopic, byte* payload, unsigned int length)
     ESP.restart();
     }
   }
-
 
 void showSettings()
   {
@@ -321,7 +287,11 @@ void reconnect()
       Serial.print("failed, rc=");
       Serial.println(mqttClient.state());
       Serial.println("Will try again in 5 seconds");
+      
       // Wait 5 seconds before retrying
+      // In the meantime check for input in case something needs to be changed to make it work
+      checkForCommand(); 
+      
       delay(5000);
       }
     }
@@ -530,16 +500,8 @@ void initializeSettings()
 void loop() 
   {
   // serialEvent is not interrupt driven on the ESP32 for some reason. Do it here.
-  if (Serial.available())
-    {
-    serialEvent();
-    String cmd=getConfigCommand();
-    if (cmd.length()>0)
-      {
-      processCommand(cmd);
-      }
-    }
-        
+  checkForCommand();
+          
   // call loop() regularly to allow the library to send MQTT keep alives which
   // avoids being disconnected by the broker.  Don't call if not set up yet
   // because the WDT on the ESP8266 will reset the processor. Not a problem on ESP32.
@@ -554,7 +516,18 @@ void loop()
     }
   }
 
-
+void checkForCommand()
+  {
+  if (Serial.available())
+    {
+    serialEvent();
+    String cmd=getConfigCommand();
+    if (cmd.length()>0)
+      {
+      processCommand(cmd);
+      }
+    }
+  }
 
 /************************
  * Do the MQTT thing
@@ -699,4 +672,59 @@ void serialEvent() {
       commandString += inChar;
       }
     }
+  }
+
+//**********************************************************************
+//********************** MQTT Command Handlers *************************
+//**********************************************************************
+
+char* mqttResetPulseCounter()
+  {
+  pulseCount=0;
+  storePulseCount(); //store the zeroed pulse counter
+  char tmp[10];
+  strcpy(tmp,"OK");
+  return tmp;
+  }
+
+char* getMqttSettings()
+  {
+  char tempbuf[15]; //for converting numbers to strings
+  char jsonStatus[JSON_STATUS_SIZE];
+
+  strcpy(jsonStatus,"{");
+  strcat(jsonStatus,"\"broker\":\"");
+  strcat(jsonStatus,settings.mqttBrokerAddress);
+  strcat(jsonStatus,"\", \"port\":");
+  sprintf(tempbuf,"%d",settings.mqttBrokerPort);
+  strcat(jsonStatus,tempbuf);
+  strcat(jsonStatus,", \"topicRoot\":\"");
+  strcat(jsonStatus,settings.mqttTopicRoot);
+  strcat(jsonStatus,"\", \"user\":\"");
+  strcat(jsonStatus,settings.mqttUsername);
+  strcat(jsonStatus,"\", \"pass\":\"");
+  strcat(jsonStatus,settings.mqttPassword);
+  strcat(jsonStatus,"\", \"ssid\":\"");
+  strcat(jsonStatus,settings.ssid);
+  strcat(jsonStatus,"\", \"wifipass\":\"");
+  strcat(jsonStatus,settings.wifiPassword);
+  strcat(jsonStatus,"\", \"pulsesPerLiter\":");
+  sprintf(tempbuf,"%.4f",settings.pulsesPerLiter);
+  strcat(jsonStatus,tempbuf);
+  strcat(jsonStatus,"}");
+  return jsonStatus;
+  }
+
+char* getVersion()
+  {
+  return VERSION;
+  }
+
+char* getMqttStatus()
+  {
+  if (liters==0.0) //happens when status is requested immediately after reboot
+  liters=pulseCount/settings.pulsesPerLiter;
+  report();
+
+  return "Status report complete";
   }

@@ -16,7 +16,7 @@
  *  factorydefaults=yes to reset all settings to factory defaults
  *  
  */
-#define VERSION "20.10.05.1"  //remember to update this after every change! YY.MM.DD.REV
+#define VERSION "20.10.06.1"  //remember to update this after every change! YY.MM.DD.REV
  
 #include <PubSubClient.h> 
 #include <ESP8266WiFi.h>
@@ -122,6 +122,7 @@ void setup()
     Serial.print(settings.ssid);
     Serial.println("\"");
     
+    WiFi.mode(WIFI_STA); //station mode, we are only a client in the wifi world
     WiFi.begin(settings.ssid, settings.wifiPassword);
 //    while (WiFi.begin(settings.ssid, settings.wifiPassword) != WL_CONNECTED) 
     while (WiFi.status() != WL_CONNECTED) 

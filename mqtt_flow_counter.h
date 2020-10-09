@@ -29,13 +29,7 @@
 #define MQTT_SERVER_UNAVAILABLE             3
 #define MQTT_BAD_USER_NAME_OR_PASSWORD      4
 #define MQTT_NOT_AUTHORIZED                 5
-
-// This is a table of MQTT commands that this device can handle, along with the handlers for each one.
-// To add functionality, just add an entry to this table and create a handler for it.  The handler
-// should return a character array containing the response string.
-//char mqttCommands[][2] = {
-//  {"settings",getMqttSettings}
-//  } unfinished...
+  
 
 //WiFi status codes
 //0 : WL_IDLE_STATUS when Wi-Fi is in process of changing between statuses

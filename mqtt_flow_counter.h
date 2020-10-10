@@ -15,7 +15,8 @@
 #define MQTT_PAYLOAD_STATUS_COMMAND "status" //show the most recent flow values
 #define JSON_STATUS_SIZE SSID_SIZE+PASSWORD_SIZE+USERNAME_SIZE+MQTT_TOPIC_SIZE+50 //+50 for associated field names, etc
 #define SENSOR_PIN 4     // the input pin for the sensor
-//#define LED_BUILTIN 2     //the blue LED
+#define DEBOUNCE_DELAY 50
+//#define LED_BUILTIN 2     //the blue LED on ESP32
 #define REPORT_FREQ 1000 //milliseconds
 #define DEFAULT_PULSES_PER_LITER 363.0
 

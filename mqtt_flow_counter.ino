@@ -16,7 +16,7 @@
  *  factorydefaults=yes to reset all settings to factory defaults
  *  
  */
-#define VERSION "20.10.06.1"  //remember to update this after every change! YY.MM.DD.REV
+#define VERSION "20.10.09.2"  //remember to update this after every change! YY.MM.DD.REV
  
 #include <PubSubClient.h> 
 #include <ESP8266WiFi.h>
@@ -48,6 +48,8 @@ float liters=0.0;
 unsigned long lastPulseTime=0;
 unsigned long pulsePeriod=0; //The number of milliseconds between last two pulses
 
+// These are the settings that get stored in EEPROM.  They are all in one struct which
+// makes it easier to store and retrieve from EEPROM.
 typedef struct 
   {
   unsigned int validConfig=0; 
@@ -76,7 +78,7 @@ void setup()
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW); //turn on the LED to show we are booting
   
-  //Initialize serial and wait for port to open 
+  //Initialize the serial port and wait for it to open 
   Serial.begin(115200);
   Serial.setTimeout(10000);
   Serial.println();
@@ -104,7 +106,7 @@ void setup()
   Serial.println("\nConfiguration is done via serial connection.  You can enter:\n");
   showSettings(); //show them
   
-  if (settings.mqttBrokerPort < 0) //then this must be the first powerup
+  if (settings.mqttBrokerPort < 0) //then this must be the first powerup. Fix the random stuff in there
     {
     Serial.println("\n*********************** Resetting All EEPROM Values ************************");
     initializeSettings();
@@ -264,13 +266,14 @@ void showSettings()
  */
 void reconnect() 
   {
+  // Create a random client ID
+  String clientId = "ESP32Client-";
+  clientId += String(random(0xffff), HEX);
+  
   // Loop until we're reconnected
   while (!mqttClient.connected()) 
     {
     Serial.print("Attempting MQTT connection...");
-    // Create a random client ID
-    String clientId = "ESP32Client-";
-    clientId += String(random(0xffff), HEX);
     
     // Attempt to connect
     if (mqttClient.connect(clientId.c_str(),settings.mqttUsername,settings.mqttPassword))
@@ -300,12 +303,19 @@ void reconnect()
 
 
 /*
- * Read and return the level of the flow pulse
+ * Read and return the level of the flow pulse after debouncing
  */
 boolean getTick() 
   {
   boolean tick=digitalRead(SENSOR_PIN);
-  return tick;
+  delay(DEBOUNCE_DELAY);        
+  if (digitalRead(SENSOR_PIN)!=tick) //if not the same then it must be bouncing, read it again
+    {
+    delay(DEBOUNCE_DELAY);
+    tick=digitalRead(SENSOR_PIN); //it's sure to be stable by now
+    }
+
+  return tick; //verified
   }
 
 void handleTick(boolean tick)

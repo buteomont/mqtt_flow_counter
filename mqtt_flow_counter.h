@@ -17,7 +17,7 @@
 #define SENSOR_PIN 4     // the input pin for the sensor
 #define DEBOUNCE_DELAY 50
 //#define LED_BUILTIN 2     //the blue LED on ESP32
-#define REPORT_FREQ 1000 //milliseconds
+#define REPORT_FREQ 15000 //milliseconds
 #define DEFAULT_PULSES_PER_LITER 363.0
 
 

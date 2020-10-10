@@ -16,7 +16,7 @@
  *  factorydefaults=yes to reset all settings to factory defaults
  *  
  */
-#define VERSION "20.10.09.2"  //remember to update this after every change! YY.MM.DD.REV
+#define VERSION "20.10.10.1"  //remember to update this after every change! YY.MM.DD.REV
  
 #include <PubSubClient.h> 
 #include <ESP8266WiFi.h>
@@ -555,7 +555,7 @@ void report()
   sprintf(reading,"%u",pulseCount);
   success=publish(topic,reading);
   if (!success)
-    Serial.println("************ Failed publishing raw rate!");
+    Serial.println("************ Failed publishing pulse count!");
 
   //publish the liter count
   strcpy(topic,settings.mqttTopicRoot);
@@ -563,7 +563,7 @@ void report()
   sprintf(reading,"%.1f",liters);
   success=publish(topic,reading);
   if (!success)
-    Serial.println("************ Failed publishing raw rate!");
+    Serial.println("************ Failed publishing liter count!");
 
   //publish the raw milliseconds between ticks
   strcpy(topic,settings.mqttTopicRoot);
@@ -571,7 +571,7 @@ void report()
   sprintf(reading,"%u",pulsePeriod);
   success=publish(topic,reading);
   if (!success)
-    Serial.println("************ Failed publishing raw rate!");
+    Serial.println("************ Failed publishing tick rate!");
   }
 
 boolean publish(char* topic, char* reading)

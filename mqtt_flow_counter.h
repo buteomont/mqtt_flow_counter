@@ -18,7 +18,7 @@
 #define DEBOUNCE_DELAY 50
 //#define LED_BUILTIN 2     //the blue LED on ESP32
 #define REPORT_FREQ 15000 //milliseconds
-#define DEFAULT_PULSES_PER_LITER 363.0
+#define DEFAULT_PULSES_PER_LITER 396.0 //was 363.0
 
 
 // Error codes copied from the MQTT library

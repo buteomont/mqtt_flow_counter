@@ -16,7 +16,7 @@
  *  factorydefaults=yes to reset all settings to factory defaults
  *  
  */
-#define VERSION "20.10.10.1"  //remember to update this after every change! YY.MM.DD.REV
+#define VERSION "20.10.10.3"  //remember to update this after every change! YY.MM.DD.REV
  
 #include <PubSubClient.h> 
 #include <ESP8266WiFi.h>
@@ -38,7 +38,7 @@ PubSubClient mqttClient(wifiClient);
 //mqtt stuff
 unsigned long lastMessageSent = 0;
 int messageCount = 0;
-unsigned long lastReport=0;
+unsigned long lastReportTime=0;
 boolean finalReportSent=true;
 
 //flow stuff
@@ -335,10 +335,10 @@ void handleTick(boolean tick)
 
   //If there is no flow for thrice the reporting frequency, send one final report
   //to catch the last few pulses
-  if (!finalReportSent && (ts-lastReport)>REPORT_FREQ*3)
+  if (!finalReportSent && (ts-lastReportTime)>REPORT_FREQ*3)
     {
     report();
-    lastReport=ts;
+    lastReportTime=ts;
     finalReportSent=true;
     storePulseCount(); //save the pulse count value in case we lose power
     digitalWrite(LED_BUILTIN, HIGH); //turn off the LED when water stops
@@ -367,10 +367,10 @@ void tickEvent(long cts)
   pulseCount++;
   liters=pulseCount/settings.pulsesPerLiter;
   
-  if (cts-lastReport>REPORT_FREQ)
+  if (cts-lastReportTime>REPORT_FREQ)
     {
     report();
-    lastReport=cts;
+    lastReportTime=cts;
     finalReportSent=false;
     storePulseCount(); //save the pulse count value in case we lose power
     }
